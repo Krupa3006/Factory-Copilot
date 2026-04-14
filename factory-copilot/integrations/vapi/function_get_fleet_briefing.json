@@ -1,0 +1,9 @@
+{
+  "name": "get_fleet_briefing",
+  "description": "Get a spoken-ready fleet summary highlighting the highest-risk machine",
+  "parameters": {
+    "type": "object",
+    "properties": {}
+  },
+  "url": "http://YOUR_IP:8000/voice/briefing"
+}

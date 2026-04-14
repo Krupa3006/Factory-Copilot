@@ -1,0 +1,13 @@
+{
+  "tool_name": "get_fleet_briefing",
+  "tool_type": "api_request",
+  "method": "POST",
+  "url": "http://YOUR_PUBLIC_API_BASE_URL/voice/tools/get_fleet_briefing",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {}
+  }
+}

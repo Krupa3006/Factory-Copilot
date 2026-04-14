@@ -1,0 +1,21 @@
+{
+  "tool_name": "create_work_order",
+  "tool_type": "api_request",
+  "method": "POST",
+  "url": "http://YOUR_PUBLIC_API_BASE_URL/voice/tools/create_work_order",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "machine_id": {
+        "type": "integer",
+        "description": "Machine ID from 1 to 6",
+        "minimum": 1,
+        "maximum": 6
+      }
+    },
+    "required": ["machine_id"]
+  }
+}

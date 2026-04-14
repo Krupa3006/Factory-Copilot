@@ -1,0 +1,15 @@
+{
+  "name": "get_machine_status",
+  "description": "Get current health status of a specific machine",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "machine_id": {
+        "type": "integer",
+        "description": "Machine ID from 1 to 6"
+      }
+    },
+    "required": ["machine_id"]
+  },
+  "url": "http://YOUR_IP:8000/predict/{machine_id}"
+}

@@ -1,0 +1,15 @@
+{
+  "name": "create_work_order",
+  "description": "Create a maintenance work order for a machine",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "machine_id": {
+        "type": "integer",
+        "description": "Machine ID from 1 to 6"
+      }
+    },
+    "required": ["machine_id"]
+  },
+  "url": "http://YOUR_IP:8000/voice/workorder/{machine_id}"
+}

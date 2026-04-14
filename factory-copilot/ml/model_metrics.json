@@ -1,0 +1,51 @@
+{
+  "r2_score": 0.7794458270072937,
+  "mae": 14.268842697143555,
+  "num_rows": 160359,
+  "num_engines": 709,
+  "datasets": [
+    "train_FD001.txt",
+    "train_FD002.txt",
+    "train_FD003.txt",
+    "train_FD004.txt"
+  ],
+  "model_stack": [
+    "XGBoost",
+    "Isolation Forest",
+    "LSTM"
+  ],
+  "lstm": {
+    "status": "skipped",
+    "reason": "tensorflow is not installed; XGBoost and Isolation Forest artifacts were still generated."
+  },
+  "test_evaluation": {
+    "FD001": {
+      "r2_score": 0.6139821800927815,
+      "mae": 12.112121339753115,
+      "rows": 13096,
+      "engines": 100
+    },
+    "FD002": {
+      "r2_score": 0.5765967491931163,
+      "mae": 14.374546382521977,
+      "rows": 33991,
+      "engines": 259
+    },
+    "FD003": {
+      "r2_score": 0.6426133322386105,
+      "mae": 9.490181204266477,
+      "rows": 16596,
+      "engines": 100
+    },
+    "FD004": {
+      "r2_score": 0.5747291595868235,
+      "mae": 10.905750687476843,
+      "rows": 41214,
+      "engines": 248
+    },
+    "aggregate": {
+      "mean_mae": 11.720649903504604,
+      "datasets": 4
+    }
+  }
+}
