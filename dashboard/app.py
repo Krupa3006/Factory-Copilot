@@ -7,8 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
@@ -19,11 +17,11 @@ load_dotenv(ROOT / ".env")
 
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 PUBLIC_API_BASE_URL = os.getenv("PUBLIC_API_BASE_URL", API_URL).rstrip("/")
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
 VAPI_PUBLIC_KEY = os.getenv("VAPI_PUBLIC_KEY", "")
 VAPI_ASSISTANT_ID = os.getenv("VAPI_ASSISTANT_ID", "")
 GITHUB_REPO_URL = os.getenv("GITHUB_REPO_URL", "").strip()
 LINKEDIN_POST_URL = os.getenv("LINKEDIN_POST_URL", "").strip()
+AUTHOR_NAME = os.getenv("AUTHOR_NAME", "Krupa Joshi").strip()
 
 st.set_page_config(page_title="Factory Copilot", page_icon="🏭", layout="wide")
 
@@ -34,6 +32,20 @@ st.markdown(
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
       html, body, [class*="css"] { font-family: "Space Grotesk", sans-serif; }
+      section[data-testid="stSidebar"] {
+        background:
+          linear-gradient(180deg, rgba(15, 23, 42, 0.96) 0%, rgba(30, 41, 59, 0.96) 100%);
+        border-right: 1px solid rgba(148, 163, 184, 0.22);
+      }
+      .sidebar-brand {
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        border-radius: 14px;
+        padding: 0.7rem 0.8rem;
+        background: rgba(2, 6, 23, 0.6);
+        margin-bottom: 0.8rem;
+      }
+      .sidebar-brand-title { color: #f8fafc; font-weight: 700; font-size: 1rem; }
+      .sidebar-brand-meta { color: #94a3b8; font-size: 0.78rem; margin-top: 0.2rem; }
       .stApp {
         background:
           radial-gradient(1200px 500px at 0% -10%, rgba(30, 136, 229, 0.18), transparent 60%),
@@ -53,6 +65,18 @@ st.markdown(
       }
       .hero h1 { margin: 0 0 0.35rem 0; font-size: clamp(1.7rem, 4vw, 2.45rem); letter-spacing: 0.4px; }
       .hero p { margin: 0; opacity: 0.9; font-size: 1.04rem; }
+      .hero-meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 0.7rem;
+        border: 1px solid rgba(148, 163, 184, 0.38);
+        border-radius: 999px;
+        padding: 0.3rem 0.65rem;
+        background: rgba(15, 23, 42, 0.45);
+        color: #e2e8f0;
+        font-size: 0.8rem;
+      }
       .kpi-grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -100,6 +124,15 @@ st.markdown(
       }
       .voice-label { color:#94a3b8; font-size:0.78rem; text-transform:uppercase; letter-spacing:0.08em; }
       .voice-value { color:#f8fafc; font-size:1.08rem; font-weight:600; margin-top:0.2rem; }
+      .voice-help {
+        margin-top: 0.6rem;
+        border: 1px dashed rgba(148, 163, 184, 0.45);
+        border-radius: 12px;
+        padding: 0.55rem 0.7rem;
+        color: #cbd5e1;
+        font-size: 0.82rem;
+        background: rgba(15, 23, 42, 0.34);
+      }
       @media (max-width: 980px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
       @media (max-width: 580px) { .kpi-grid { grid-template-columns: 1fr; } }
     </style>
@@ -110,31 +143,25 @@ st.markdown(
 
 @st.cache_data(ttl=10)
 def get_fleet() -> dict[str, Any] | None:
-    try:
-        response = requests.get(f"{API_URL}/fleet", timeout=8)
-        response.raise_for_status()
-        return response.json()
-    except (requests.RequestException, ValueError):
-        return None
+    return fetch_json_with_retry("/fleet")
 
 
 @st.cache_data(ttl=15)
 def get_health() -> dict[str, Any] | None:
-    try:
-        response = requests.get(f"{API_URL}/health", timeout=8)
-        response.raise_for_status()
-        return response.json()
-    except (requests.RequestException, ValueError):
-        return None
+    return fetch_json_with_retry("/health")
 
 
-def create_work_order(engine_id: int) -> dict[str, Any] | None:
-    try:
-        response = requests.post(f"{API_URL}/workorder/{engine_id}", timeout=8)
-        response.raise_for_status()
-        return response.json()
-    except (requests.RequestException, ValueError):
-        return None
+def fetch_json_with_retry(path: str) -> dict[str, Any] | None:
+    # Render free instances can take ~50 seconds to wake up after inactivity.
+    timeouts = (8, 20, 35)
+    for timeout in timeouts:
+        try:
+            response = requests.get(f"{API_URL}{path}", timeout=timeout)
+            response.raise_for_status()
+            return response.json()
+        except (requests.RequestException, ValueError):
+            continue
+    return None
 
 
 def risk_rank(machine: dict[str, Any]) -> tuple[int, float, float]:
@@ -162,10 +189,11 @@ def build_operations_queue(source_machines: list[dict[str, Any]]) -> pd.DataFram
 
 
 st.markdown(
-    """
+    f"""
     <div class="hero">
       <h1>Factory Copilot</h1>
       <p>Live predictive maintenance command dashboard with automated alerts and voice support.</p>
+      <div class="hero-meta">Built by: {AUTHOR_NAME}</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -180,6 +208,15 @@ if quick_links:
     st.markdown(f'<div class="quick-links">{"".join(quick_links)}</div>', unsafe_allow_html=True)
 
 with st.sidebar:
+    st.markdown(
+        f"""
+        <div class="sidebar-brand">
+          <div class="sidebar-brand-title">Factory Copilot</div>
+          <div class="sidebar-brand-meta">Lead: {AUTHOR_NAME}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.header("Control Panel")
     auto_refresh = st.toggle("Auto refresh", value=True)
     refresh_seconds = st.slider("Refresh interval (sec)", min_value=5, max_value=60, value=10, step=5)
@@ -199,7 +236,14 @@ else:
     st.markdown("<p class='small-muted'>Backend: <span class='status-down'>OFFLINE</span></p>", unsafe_allow_html=True)
 
 if not fleet:
-    st.error("Cannot connect to the FastAPI backend. Start it on port 8000 and refresh this page.")
+    if "onrender.com" in API_URL:
+        st.error(
+            "Cannot connect to backend right now. On Render free tier, API wake-up can take up to ~60 seconds. "
+            "Wait a bit and refresh."
+        )
+    else:
+        st.error("Cannot connect to the FastAPI backend. Start it on port 8000 and refresh this page.")
+    st.caption(f"Current API_URL: {API_URL}")
     st.stop()
 
 summary = fleet["fleet_summary"]
@@ -266,13 +310,7 @@ else:
                     st.warning("Anomaly detected by Isolation Forest model.")
 
                 st.caption(machine["recommendation"])
-                if st.button("Generate Work Order", key=f"wo_{machine['engine_id']}"):
-                    with st.spinner("Creating work order..."):
-                        work_order = create_work_order(machine["engine_id"])
-                    if work_order:
-                        st.json(work_order)
-                    else:
-                        st.error("Could not create the work order. Check that the API is running and try again.")
+                st.caption('Voice shortcut: "Create work order for machine {0}"'.format(machine["engine_id"]))
 
 st.divider()
 st.subheader("Fleet Health Comparison")
@@ -289,61 +327,21 @@ health_frame = pd.DataFrame(
 )
 
 if not health_frame.empty:
-    color_map = {"critical": "#E24B4A", "warning": "#EF9F27", "healthy": "#2E8B57"}
-    health_chart = px.bar(health_frame, x="Machine", y="Health %", color="Risk", color_discrete_map=color_map)
-    health_chart.update_layout(
-        height=360,
-        margin=dict(l=10, r=10, t=40, b=10),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        legend_title_text="Risk",
-    )
-    st.plotly_chart(health_chart, width="stretch")
-
+    chart_df = health_frame.set_index("Machine")[["Health %", "RUL (hours)"]]
+    st.bar_chart(chart_df, height=320, use_container_width=True)
     risk_mix = (
         health_frame.groupby("Risk", as_index=False)
         .size()
         .rename(columns={"size": "Count"})
         .sort_values(by="Count", ascending=False)
     )
-    mix_chart = px.pie(
-        risk_mix,
-        names="Risk",
-        values="Count",
-        hole=0.55,
-        color="Risk",
-        color_discrete_map={"critical": "#E24B4A", "warning": "#EF9F27", "healthy": "#2E8B57"},
-        title="Risk Distribution",
-    )
-    mix_chart.update_layout(
-        height=330,
-        margin=dict(l=0, r=0, t=50, b=0),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=True,
-    )
-    st.plotly_chart(mix_chart, width="stretch")
+    st.dataframe(risk_mix, use_container_width=True, hide_index=True)
 
 worst = min(machines, key=lambda item: item["rul_hours"]) if machines else min(fleet["machines"], key=lambda item: item["rul_hours"])
 st.subheader(f"RUL Gauge - Machine {worst['engine_id']} (Most Critical)")
-gauge = go.Figure(
-    go.Indicator(
-        mode="gauge+number",
-        value=worst["rul_hours"],
-        title={"text": "Remaining Useful Life (hours)"},
-        gauge={
-            "axis": {"range": [0, 250]},
-            "bar": {"color": "#E24B4A"},
-            "steps": [
-                {"range": [0, 30], "color": "#FCEBEB"},
-                {"range": [30, 80], "color": "#FAEEDA"},
-                {"range": [80, 250], "color": "#EAF3DE"},
-            ],
-        },
-    )
-)
-gauge.update_layout(height=300, margin=dict(l=10, r=10, t=35, b=10), paper_bgcolor="rgba(0,0,0,0)")
-st.plotly_chart(gauge, width="stretch")
+rul_ratio = max(0.0, min(1.0, worst["rul_hours"] / 250.0))
+st.progress(rul_ratio, text=f"Machine {worst['engine_id']} RUL: {worst['rul_hours']}h / 250h")
+st.caption("0-30h = Critical | 30-80h = Warning | 80h+ = Healthy")
 
 st.divider()
 st.subheader("Operations Queue")
@@ -405,9 +403,12 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 id="factory-copilot-voice-button"
                 style="background:#0B6E4F;color:white;padding:12px 20px;border:none;border-radius:999px;font-size:16px;cursor:pointer;box-shadow:0 10px 24px rgba(11,110,79,0.24);"
             >
-                Talk to Factory Copilot
+                🎤 Talk to Factory Copilot
             </button>
             <span style="color:#94a3b8;font-size:14px;">Voice assistant is configured and ready.</span>
+        </div>
+        <div style="margin-top:10px;border:1px dashed rgba(148,163,184,0.45);border-radius:12px;padding:8px 12px;color:#cbd5e1;font-size:13px;background:rgba(15,23,42,0.34);">
+            Quick voice prompt: "Status of machine 3" or "Create work order for machine 3"
         </div>
         <script src="https://cdn.jsdelivr.net/npm/@vapi-ai/web@latest/dist/index.umd.js"></script>
         <script>
@@ -418,65 +419,22 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             }});
         </script>
         """,
-        height=110,
+        height=145,
     )
 else:
     st.caption("Add VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID in .env to enable one-click voice calls.")
 
 st.divider()
-st.subheader("Chat with Factory Copilot AI")
-if "messages" not in st.session_state:
-    machine_three = fleet["machines"][2]
-    st.session_state.messages = [
-        {
-            "role": "assistant",
-            "content": (
-                f"Hello. Fleet health is {summary['avg_health']}%. "
-                f"Machine 3 is {machine_three['risk_level']} with {machine_three['failure_probability']}% failure risk."
-            ),
-        }
-    ]
-
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
-
-if prompt := st.chat_input("Ask about machine health, RUL, or work orders..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.write(prompt)
-
-    if CLAUDE_API_KEY:
-        try:
-            import anthropic
-
-            client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-            system_prompt = (
-                "You are Factory Copilot, an expert predictive maintenance assistant. "
-                f"Current fleet data: {fleet}. "
-                "Answer concisely, using real machine numbers. Keep responses to 3 sentences max."
-            )
-            response = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=200,
-                system=system_prompt,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            reply = response.content[0].text
-        except Exception as exc:  # pragma: no cover
-            reply = f"Claude request failed: {exc}"
-    else:
-        critical = [machine for machine in fleet["machines"] if machine["risk_level"] == "critical"]
-        target_machine = critical[0]["engine_id"] if critical else worst["engine_id"]
-        reply = (
-            f"Fleet health is {summary['avg_health']}%. "
-            f"Critical machines: {summary['critical']}. "
-            f"Most urgent action is machine {target_machine} maintenance scheduling."
-        )
-
-    st.session_state.messages.append({"role": "assistant", "content": reply})
-    with st.chat_message("assistant"):
-        st.write(reply)
+st.subheader("Operator Assistant Prompts")
+st.info(
+    "Use Voice Agent for live assistant actions. Recommended prompts: "
+    "'Give me fleet briefing', 'Status of machine 3', 'Create work order for machine 3'."
+)
+machine_three = fleet["machines"][2]
+st.markdown(
+    f"**Current quick brief:** Fleet health **{summary['avg_health']}%**, "
+    f"Machine 3 is **{machine_three['risk_level']}** with **{machine_three['failure_probability']}%** failure risk."
+)
 
 st.caption(f"Last updated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
