@@ -407,19 +407,80 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             </button>
             <span style="color:#94a3b8;font-size:14px;">Voice assistant is configured and ready.</span>
         </div>
+        <div id="factory-copilot-voice-status" style="margin-top:8px;color:#93c5fd;font-size:13px;">
+            Voice status: idle
+        </div>
         <div style="margin-top:10px;border:1px dashed rgba(148,163,184,0.45);border-radius:12px;padding:8px 12px;color:#cbd5e1;font-size:13px;background:rgba(15,23,42,0.34);">
             Quick voice prompt: "Status of machine 3" or "Create work order for machine 3"
         </div>
-        <script src="https://cdn.jsdelivr.net/npm/@vapi-ai/web@latest/dist/index.umd.js"></script>
         <script>
-            const vapi = new Vapi("{VAPI_PUBLIC_KEY}");
+            const PUBLIC_KEY = "{VAPI_PUBLIC_KEY}";
+            const ASSISTANT_ID = "{VAPI_ASSISTANT_ID}";
+            const statusEl = document.getElementById("factory-copilot-voice-status");
             const button = document.getElementById("factory-copilot-voice-button");
-            button.addEventListener("click", () => {{
-                vapi.start("{VAPI_ASSISTANT_ID}");
+
+            function setStatus(text, color="#93c5fd") {{
+                if (!statusEl) return;
+                statusEl.textContent = "Voice status: " + text;
+                statusEl.style.color = color;
+            }}
+
+            async function loadVapiSdk() {{
+                if (window.Vapi) return true;
+                const sources = [
+                    "https://cdn.jsdelivr.net/npm/@vapi-ai/web@latest/dist/index.umd.js",
+                    "https://unpkg.com/@vapi-ai/web@latest/dist/index.umd.js"
+                ];
+                for (const src of sources) {{
+                    try {{
+                        await new Promise((resolve, reject) => {{
+                            const s = document.createElement("script");
+                            s.src = src;
+                            s.async = true;
+                            s.onload = resolve;
+                            s.onerror = reject;
+                            document.head.appendChild(s);
+                        }});
+                        if (window.Vapi) return true;
+                    }} catch (e) {{
+                        // try next source
+                    }}
+                }}
+                return false;
+            }}
+
+            let vapiClient = null;
+
+            button.addEventListener("click", async () => {{
+                setStatus("starting...", "#facc15");
+                const loaded = await loadVapiSdk();
+                if (!loaded) {{
+                    setStatus("failed to load Vapi web SDK (check ad blocker/network).", "#f87171");
+                    return;
+                }}
+                try {{
+                    if (!vapiClient) {{
+                        vapiClient = new window.Vapi(PUBLIC_KEY);
+                        if (vapiClient.on) {{
+                            vapiClient.on("call-start", () => setStatus("call started", "#86efac"));
+                            vapiClient.on("call-end", () => setStatus("call ended", "#93c5fd"));
+                            vapiClient.on("error", (err) => {{
+                                const msg = err && err.message ? err.message : "unknown error";
+                                setStatus("error: " + msg, "#f87171");
+                            }});
+                        }}
+                    }}
+                    await vapiClient.start(ASSISTANT_ID);
+                    setStatus("connecting... allow microphone if prompted", "#facc15");
+                }} catch (err) {{
+                    const msg = err && err.message ? err.message : String(err);
+                    setStatus("start failed: " + msg, "#f87171");
+                    console.error("Vapi start failed", err);
+                }}
             }});
         </script>
         """,
-        height=145,
+        height=170,
     )
 else:
     st.caption("Add VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID in .env to enable one-click voice calls.")
