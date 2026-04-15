@@ -412,6 +412,28 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 statusEl.style.color = color;
             }}
 
+            async function ensureMicrophonePermission() {{
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
+                    setStatus("microphone API not available in this browser.", "#f87171");
+                    return false;
+                }}
+                try {{
+                    const stream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
+                    stream.getTracks().forEach((track) => track.stop());
+                    return true;
+                }} catch (err) {{
+                    const name = err && err.name ? err.name : "UnknownError";
+                    if (name === "NotAllowedError") {{
+                        setStatus("microphone blocked. Click lock icon in address bar -> allow Microphone -> refresh.", "#f87171");
+                    }} else if (name === "NotFoundError") {{
+                        setStatus("no microphone device found on this system.", "#f87171");
+                    }} else {{
+                        setStatus("microphone error: " + name, "#f87171");
+                    }}
+                    return false;
+                }}
+            }}
+
             async function loadVapiSdk() {{
                 if (window.Vapi) return window.Vapi;
                 try {{
@@ -447,7 +469,12 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             let vapiClient = null;
 
             button.addEventListener("click", async () => {{
-                setStatus("starting...", "#facc15");
+                setStatus("checking microphone permission...", "#facc15");
+                const micOk = await ensureMicrophonePermission();
+                if (!micOk) {{
+                    return;
+                }}
+                setStatus("starting voice SDK...", "#facc15");
                 const VapiCtor = await loadVapiSdk();
                 if (!VapiCtor) {{
                     setStatus("failed to load Vapi web SDK (check ad blocker/network).", "#f87171");
