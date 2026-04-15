@@ -407,6 +407,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             const button = document.getElementById("factory-copilot-voice-button");
             let vapiClient = null;
             let callActive = false;
+            let connectTimer = null;
 
             function withTimeout(promise, ms, label) {{
                 return Promise.race([
@@ -455,6 +456,13 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 floatingFab.style.background = isActive ? "#7f1d1d" : "#0B6E4F";
                 floatingFab.innerText = isActive ? "■" : "🎤";
                 floatingFab.title = isActive ? "Stop voice call" : "Talk to Factory Copilot";
+            }}
+
+            function clearConnectTimer() {{
+                if (connectTimer) {{
+                    clearTimeout(connectTimer);
+                    connectTimer = null;
+                }}
             }}
 
             async function ensureMicrophonePermission() {{
@@ -522,16 +530,19 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                     vapiClient = new VapiCtor(PUBLIC_KEY);
                     if (vapiClient.on) {{
                         vapiClient.on("call-start", () => {{
+                            clearConnectTimer();
                             callActive = true;
                             setFabActive(true);
                             setStatus("call started", "#86efac");
                         }});
                         vapiClient.on("call-end", () => {{
+                            clearConnectTimer();
                             callActive = false;
                             setFabActive(false);
                             setStatus("call ended", "#93c5fd");
                         }});
                         vapiClient.on("error", (err) => {{
+                            clearConnectTimer();
                             const msg = err && err.message ? err.message : "unknown error";
                             callActive = false;
                             setFabActive(false);
@@ -563,7 +574,17 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 try {{
                     await withTimeout(client.start(ASSISTANT_ID), 12000, "voice start");
                     setStatus("connecting to assistant...", "#facc15");
+                    clearConnectTimer();
+                    connectTimer = setTimeout(() => {{
+                        if (!callActive) {{
+                            setStatus(
+                                "connection timeout. Check VAPI_ASSISTANT_ID, assistant is Published, and browser network blocks.",
+                                "#f87171"
+                            );
+                        }}
+                    }}, 15000);
                 }} catch (err) {{
+                    clearConnectTimer();
                     const msg = err && err.message ? err.message : String(err);
                     setStatus("start failed: " + msg, "#f87171");
                     console.error("Vapi start failed", err);
