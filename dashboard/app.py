@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import time
 from pathlib import Path
@@ -383,18 +382,6 @@ voice_col3.markdown(
     unsafe_allow_html=True,
 )
 
-with st.expander("Voice Production Setup", expanded=not vapi_ready):
-    st.write("1. Add VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID in .env.")
-    st.write("2. Use Vapi Tools (not deprecated Custom Functions).")
-    st.write("3. Point tool URLs to your public API base URL.")
-    st.code(json.dumps({
-        "get_machine_status": f"{PUBLIC_API_BASE_URL}/voice/tools/get_machine_status",
-        "get_fleet_briefing": f"{PUBLIC_API_BASE_URL}/voice/tools/get_fleet_briefing",
-        "create_work_order": f"{PUBLIC_API_BASE_URL}/voice/tools/create_work_order",
-    }, indent=2), language="json")
-    st.write("Sample request body for machine tools:")
-    st.code(json.dumps({"machine_id": 3}, indent=2), language="json")
-
 if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
     components.html(
         f"""
@@ -426,7 +413,15 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             }}
 
             async function loadVapiSdk() {{
-                if (window.Vapi) return true;
+                if (window.Vapi) return window.Vapi;
+                try {{
+                    const mod = await import("https://esm.sh/@vapi-ai/web");
+                    if (mod && (mod.default || mod.Vapi)) {{
+                        return mod.default || mod.Vapi;
+                    }}
+                }} catch (e) {{
+                    // fall through to script-based loading
+                }}
                 const sources = [
                     "https://cdn.jsdelivr.net/npm/@vapi-ai/web@latest/dist/index.umd.js",
                     "https://unpkg.com/@vapi-ai/web@latest/dist/index.umd.js"
@@ -441,26 +436,26 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                             s.onerror = reject;
                             document.head.appendChild(s);
                         }});
-                        if (window.Vapi) return true;
+                        if (window.Vapi) return window.Vapi;
                     }} catch (e) {{
                         // try next source
                     }}
                 }}
-                return false;
+                return null;
             }}
 
             let vapiClient = null;
 
             button.addEventListener("click", async () => {{
                 setStatus("starting...", "#facc15");
-                const loaded = await loadVapiSdk();
-                if (!loaded) {{
+                const VapiCtor = await loadVapiSdk();
+                if (!VapiCtor) {{
                     setStatus("failed to load Vapi web SDK (check ad blocker/network).", "#f87171");
                     return;
                 }}
                 try {{
                     if (!vapiClient) {{
-                        vapiClient = new window.Vapi(PUBLIC_KEY);
+                        vapiClient = new VapiCtor(PUBLIC_KEY);
                         if (vapiClient.on) {{
                             vapiClient.on("call-start", () => setStatus("call started", "#86efac"));
                             vapiClient.on("call-end", () => setStatus("call ended", "#93c5fd"));
