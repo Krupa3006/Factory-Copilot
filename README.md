@@ -161,6 +161,11 @@ Use detailed deployment guide:
 
 - `DEPLOYMENT.md`
 
+Deployment notes:
+
+- API installs `requirements.txt`
+- Dashboard installs `requirements-dashboard.txt` for faster and more stable Render builds
+
 Recommended Render env values:
 
 - API service:
@@ -208,4 +213,3 @@ Use Cloudflare quick tunnel script:
 - n8n production workflow activation
 - richer voice QA prompts and scorecards
 - persistent work-order storage and audit trail
-
