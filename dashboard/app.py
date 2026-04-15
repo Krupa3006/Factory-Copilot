@@ -405,11 +405,56 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             const ASSISTANT_ID = "{VAPI_ASSISTANT_ID}";
             const statusEl = document.getElementById("factory-copilot-voice-status");
             const button = document.getElementById("factory-copilot-voice-button");
+            let vapiClient = null;
+            let callActive = false;
+
+            function withTimeout(promise, ms, label) {{
+                return Promise.race([
+                    promise,
+                    new Promise((_, reject) => setTimeout(() => reject(new Error(label + " timeout")), ms))
+                ]);
+            }}
 
             function setStatus(text, color="#93c5fd") {{
                 if (!statusEl) return;
                 statusEl.textContent = "Voice status: " + text;
                 statusEl.style.color = color;
+            }}
+
+            function upsertFloatingVoiceButton() {{
+                const parentDoc = window.parent && window.parent.document ? window.parent.document : document;
+                const existing = parentDoc.getElementById("factory-copilot-voice-fab-global");
+                if (existing) existing.remove();
+
+                const fab = parentDoc.createElement("button");
+                fab.id = "factory-copilot-voice-fab-global";
+                fab.type = "button";
+                fab.title = "Talk to Factory Copilot";
+                fab.innerText = "🎤";
+                fab.style.position = "fixed";
+                fab.style.right = "18px";
+                fab.style.bottom = "18px";
+                fab.style.width = "56px";
+                fab.style.height = "56px";
+                fab.style.borderRadius = "999px";
+                fab.style.border = "none";
+                fab.style.cursor = "pointer";
+                fab.style.fontSize = "24px";
+                fab.style.zIndex = "2147483000";
+                fab.style.background = "#0B6E4F";
+                fab.style.color = "#ffffff";
+                fab.style.boxShadow = "0 12px 28px rgba(0,0,0,0.35)";
+                parentDoc.body.appendChild(fab);
+                return fab;
+            }}
+
+            const floatingFab = upsertFloatingVoiceButton();
+
+            function setFabActive(isActive) {{
+                if (!floatingFab) return;
+                floatingFab.style.background = isActive ? "#7f1d1d" : "#0B6E4F";
+                floatingFab.innerText = isActive ? "■" : "🎤";
+                floatingFab.title = isActive ? "Stop voice call" : "Talk to Factory Copilot";
             }}
 
             async function ensureMicrophonePermission() {{
@@ -437,7 +482,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             async function loadVapiSdk() {{
                 if (window.Vapi) return window.Vapi;
                 try {{
-                    const mod = await import("https://esm.sh/@vapi-ai/web");
+                    const mod = await withTimeout(import("https://esm.sh/@vapi-ai/web"), 6000, "esm sdk import");
                     if (mod && (mod.default || mod.Vapi)) {{
                         return mod.default || mod.Vapi;
                     }}
@@ -450,14 +495,14 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 ];
                 for (const src of sources) {{
                     try {{
-                        await new Promise((resolve, reject) => {{
+                        await withTimeout(new Promise((resolve, reject) => {{
                             const s = document.createElement("script");
                             s.src = src;
                             s.async = true;
                             s.onload = resolve;
                             s.onerror = reject;
                             document.head.appendChild(s);
-                        }});
+                        }}), 7000, "script load");
                         if (window.Vapi) return window.Vapi;
                     }} catch (e) {{
                         // try next source
@@ -466,43 +511,70 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 return null;
             }}
 
-            let vapiClient = null;
-
-            button.addEventListener("click", async () => {{
-                setStatus("checking microphone permission...", "#facc15");
-                const micOk = await ensureMicrophonePermission();
-                if (!micOk) {{
-                    return;
-                }}
+            async function ensureClient() {{
                 setStatus("starting voice SDK...", "#facc15");
                 const VapiCtor = await loadVapiSdk();
                 if (!VapiCtor) {{
-                    setStatus("failed to load Vapi web SDK (check ad blocker/network).", "#f87171");
+                    setStatus("failed to load Vapi SDK. Disable adblock/extensions for this site.", "#f87171");
+                    return null;
+                }}
+                if (!vapiClient) {{
+                    vapiClient = new VapiCtor(PUBLIC_KEY);
+                    if (vapiClient.on) {{
+                        vapiClient.on("call-start", () => {{
+                            callActive = true;
+                            setFabActive(true);
+                            setStatus("call started", "#86efac");
+                        }});
+                        vapiClient.on("call-end", () => {{
+                            callActive = false;
+                            setFabActive(false);
+                            setStatus("call ended", "#93c5fd");
+                        }});
+                        vapiClient.on("error", (err) => {{
+                            const msg = err && err.message ? err.message : "unknown error";
+                            callActive = false;
+                            setFabActive(false);
+                            setStatus("error: " + msg, "#f87171");
+                        }});
+                    }}
+                }}
+                return vapiClient;
+            }}
+
+            async function startOrStopVoice() {{
+                if (callActive && vapiClient && vapiClient.stop) {{
+                    try {{
+                        await vapiClient.stop();
+                        setStatus("stopping call...", "#facc15");
+                    }} catch (err) {{
+                        setStatus("stop failed", "#f87171");
+                    }}
                     return;
                 }}
+
+                setStatus("checking microphone permission...", "#facc15");
+                const micOk = await ensureMicrophonePermission();
+                if (!micOk) return;
+
+                const client = await ensureClient();
+                if (!client) return;
+
                 try {{
-                    if (!vapiClient) {{
-                        vapiClient = new VapiCtor(PUBLIC_KEY);
-                        if (vapiClient.on) {{
-                            vapiClient.on("call-start", () => setStatus("call started", "#86efac"));
-                            vapiClient.on("call-end", () => setStatus("call ended", "#93c5fd"));
-                            vapiClient.on("error", (err) => {{
-                                const msg = err && err.message ? err.message : "unknown error";
-                                setStatus("error: " + msg, "#f87171");
-                            }});
-                        }}
-                    }}
-                    await vapiClient.start(ASSISTANT_ID);
-                    setStatus("connecting... allow microphone if prompted", "#facc15");
+                    await withTimeout(client.start(ASSISTANT_ID), 12000, "voice start");
+                    setStatus("connecting to assistant...", "#facc15");
                 }} catch (err) {{
                     const msg = err && err.message ? err.message : String(err);
                     setStatus("start failed: " + msg, "#f87171");
                     console.error("Vapi start failed", err);
                 }}
-            }});
+            }}
+
+            button.addEventListener("click", startOrStopVoice);
+            floatingFab.addEventListener("click", startOrStopVoice);
         </script>
         """,
-        height=170,
+        height=175,
     )
 else:
     st.caption("Add VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID in .env to enable one-click voice calls.")
