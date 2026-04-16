@@ -411,11 +411,15 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
         <script>
             const PUBLIC_KEY = "{VAPI_PUBLIC_KEY}";
             const ASSISTANT_ID = "{VAPI_ASSISTANT_ID}";
+            const API_BASE = "{PUBLIC_API_BASE_URL}";
             const statusEl = document.getElementById("factory-copilot-voice-status");
             const button = document.getElementById("factory-copilot-voice-button");
             let vapiClient = null;
             let callActive = false;
             let connectTimer = null;
+            let localMode = false;
+            let localListening = false;
+            let localRecognizer = null;
 
             function withTimeout(promise, ms, label) {{
                 return Promise.race([
@@ -428,6 +432,15 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 if (!statusEl) return;
                 statusEl.textContent = "Voice status: " + text;
                 statusEl.style.color = color;
+            }}
+
+            function speak(text) {{
+                if (!("speechSynthesis" in window)) return;
+                const utter = new SpeechSynthesisUtterance(text);
+                utter.rate = 1.0;
+                utter.pitch = 1.0;
+                window.speechSynthesis.cancel();
+                window.speechSynthesis.speak(utter);
             }}
 
             function upsertFloatingVoiceButton() {{
@@ -470,6 +483,127 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 if (connectTimer) {{
                     clearTimeout(connectTimer);
                     connectTimer = null;
+                }}
+            }}
+
+            function parseMachineId(text) {{
+                const specific = text.match(/(?:machine|machin|m)\\s*([1-6])/i);
+                if (specific) return Number(specific[1]);
+                const simple = text.match(/\\b([1-6])\\b/);
+                if (simple) return Number(simple[1]);
+                return null;
+            }}
+
+            async function postTool(path, payload) {{
+                const response = await fetch(`${{API_BASE}}${{path}}`, {{
+                    method: "POST",
+                    headers: {{ "Content-Type": "application/json" }},
+                    body: JSON.stringify(payload || {{}})
+                }});
+                if (!response.ok) {{
+                    throw new Error(`API ${{response.status}}`);
+                }}
+                return await response.json();
+            }}
+
+            async function handleLocalCommand(transcript) {{
+                const text = (transcript || "").toLowerCase();
+                try {{
+                    if (text.includes("fleet") || text.includes("brief")) {{
+                        const data = await postTool("/voice/tools/get_fleet_briefing", {{}});
+                        const reply = data.result_text || "Fleet briefing is ready.";
+                        setStatus("local voice response ready", "#86efac");
+                        speak(reply);
+                        return;
+                    }}
+
+                    if (text.includes("work order") || text.includes("create order") || text.includes("order")) {{
+                        const machineId = parseMachineId(text) || 3;
+                        const data = await postTool("/voice/tools/create_work_order", {{ machine_id: machineId }});
+                        const reply = data.result_text || `Work order created for machine ${{machineId}}.`;
+                        setStatus("local voice response ready", "#86efac");
+                        speak(reply);
+                        return;
+                    }}
+
+                    if (text.includes("status") || text.includes("health") || text.includes("risk") || text.includes("rul") || text.includes("machine")) {{
+                        const machineId = parseMachineId(text) || 3;
+                        const data = await postTool("/voice/tools/get_machine_status", {{ machine_id: machineId }});
+                        const reply = data.result_text || `Machine ${{machineId}} status is ready.`;
+                        setStatus("local voice response ready", "#86efac");
+                        speak(reply);
+                        return;
+                    }}
+
+                    setStatus("local voice: command not recognized", "#facc15");
+                    speak("Please say fleet briefing, status of machine 3, or create work order for machine 3.");
+                }} catch (err) {{
+                    const msg = err && err.message ? err.message : "local command failed";
+                    setStatus("local voice error: " + msg, "#f87171");
+                    speak("I could not complete that request. Please try again.");
+                }}
+            }}
+
+            function ensureLocalRecognizer() {{
+                if (localRecognizer) return true;
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SpeechRecognition) {{
+                    setStatus("local voice not supported in this browser. Use Chrome desktop.", "#f87171");
+                    return false;
+                }}
+                localRecognizer = new SpeechRecognition();
+                localRecognizer.lang = "en-US";
+                localRecognizer.interimResults = false;
+                localRecognizer.continuous = false;
+                localRecognizer.maxAlternatives = 1;
+
+                localRecognizer.onstart = () => {{
+                    localListening = true;
+                    setFabActive(true);
+                    setStatus("local voice listening... speak now", "#86efac");
+                }};
+
+                localRecognizer.onresult = async (event) => {{
+                    const transcript = event.results?.[0]?.[0]?.transcript || "";
+                    setStatus(`heard: "${{transcript}}"`, "#facc15");
+                    await handleLocalCommand(transcript);
+                }};
+
+                localRecognizer.onerror = (event) => {{
+                    const err = event && event.error ? event.error : "unknown";
+                    localListening = false;
+                    setFabActive(false);
+                    setStatus("local voice error: " + err, "#f87171");
+                }};
+
+                localRecognizer.onend = () => {{
+                    localListening = false;
+                    setFabActive(false);
+                    if (localMode) {{
+                        setStatus("local voice ready. tap mic and speak.", "#93c5fd");
+                    }}
+                }};
+                return true;
+            }}
+
+            async function startLocalListening() {{
+                if (!ensureLocalRecognizer()) return;
+                try {{
+                    localRecognizer.start();
+                }} catch (err) {{
+                    setStatus("local voice start blocked. tap again.", "#f87171");
+                }}
+            }}
+
+            function activateLocalMode(reason) {{
+                localMode = true;
+                callActive = false;
+                clearConnectTimer();
+                setFabActive(false);
+                if (reason) {{
+                    setStatus("Vapi unavailable (" + reason + "). local voice enabled.", "#facc15");
+                }} else {{
+                    setStatus("local voice enabled.", "#facc15");
                 }}
             }}
 
@@ -555,6 +689,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                             callActive = false;
                             setFabActive(false);
                             setStatus("error: " + msg, "#f87171");
+                            activateLocalMode(msg);
                         }});
                     }}
                 }}
@@ -562,6 +697,20 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             }}
 
             async function startOrStopVoice() {{
+                if (localMode) {{
+                    if (localListening && localRecognizer) {{
+                        try {{
+                            localRecognizer.stop();
+                            setStatus("local voice stopped", "#93c5fd");
+                        }} catch (err) {{
+                            setStatus("could not stop local voice", "#f87171");
+                        }}
+                        return;
+                    }}
+                    await startLocalListening();
+                    return;
+                }}
+
                 if (callActive && vapiClient && vapiClient.stop) {{
                     try {{
                         await vapiClient.stop();
@@ -577,7 +726,11 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 if (!micOk) return;
 
                 const client = await ensureClient();
-                if (!client) return;
+                if (!client) {{
+                    activateLocalMode("sdk");
+                    await startLocalListening();
+                    return;
+                }}
 
                 try {{
                     await withTimeout(client.start(ASSISTANT_ID), 12000, "voice start");
@@ -585,16 +738,15 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                     clearConnectTimer();
                     connectTimer = setTimeout(() => {{
                         if (!callActive) {{
-                            setStatus(
-                                "connection timeout. Check VAPI_ASSISTANT_ID, assistant is Published, and browser network blocks.",
-                                "#f87171"
-                            );
+                            activateLocalMode("connection timeout");
+                            startLocalListening();
                         }}
                     }}, 15000);
                 }} catch (err) {{
                     clearConnectTimer();
                     const msg = err && err.message ? err.message : String(err);
-                    setStatus("start failed: " + msg, "#f87171");
+                    activateLocalMode(msg);
+                    await startLocalListening();
                     console.error("Vapi start failed", err);
                 }}
             }}
