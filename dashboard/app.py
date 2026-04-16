@@ -590,7 +590,6 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                     localListening = true;
                     setFabActive(true);
                     setStatus("local voice listening... speak now", "#86efac");
-                    setFirstMessage("Voice started (local mode). Say your command now.", "#86efac");
                 }};
 
                 localRecognizer.onresult = async (event) => {{
@@ -616,12 +615,36 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 return true;
             }}
 
-            async function startLocalListening() {{
+            async function startLocalListening(withIntro=false) {{
                 if (!ensureLocalRecognizer()) return;
                 try {{
+                    if (withIntro && "speechSynthesis" in window) {{
+                        window.speechSynthesis.cancel();
+                        const intro = new SpeechSynthesisUtterance(FIRST_MESSAGE);
+                        intro.rate = 1.0;
+                        intro.pitch = 1.0;
+                        setStatus("local intro speaking...", "#86efac");
+                        setFirstMessage("Assistant: " + FIRST_MESSAGE, "#86efac");
+                        intro.onend = () => {{
+                            try {{
+                                localRecognizer.start();
+                            }} catch (err) {{
+                                setStatus("local voice start blocked. tap mic again.", "#f87171");
+                            }}
+                        }};
+                        intro.onerror = () => {{
+                            try {{
+                                localRecognizer.start();
+                            }} catch (err) {{
+                                setStatus("local voice start blocked. tap mic again.", "#f87171");
+                            }}
+                        }};
+                        window.speechSynthesis.speak(intro);
+                        return;
+                    }}
                     localRecognizer.start();
                 }} catch (err) {{
-                    setStatus("local voice start blocked. tap again.", "#f87171");
+                    setStatus("local voice start blocked. tap mic again.", "#f87171");
                 }}
             }}
 
@@ -743,7 +766,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                         }}
                         return;
                     }}
-                    await startLocalListening();
+                    await startLocalListening(true);
                     return;
                 }}
 
@@ -765,7 +788,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 const client = await ensureClient();
                 if (!client) {{
                     activateLocalMode("sdk");
-                    await startLocalListening();
+                    setStatus("local voice ready. click mic icon to start and I will greet first.", "#facc15");
                     return;
                 }}
 
@@ -777,14 +800,14 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                     connectTimer = setTimeout(() => {{
                         if (!callActive) {{
                             activateLocalMode("connection timeout");
-                            startLocalListening();
+                            setStatus("local voice ready. click mic icon to start and I will greet first.", "#facc15");
                         }}
                     }}, 15000);
                 }} catch (err) {{
                     clearConnectTimer();
                     const msg = err && err.message ? err.message : String(err);
                     activateLocalMode(msg);
-                    await startLocalListening();
+                    setStatus("local voice ready. click mic icon to start and I will greet first.", "#facc15");
                     console.error("Vapi start failed", err);
                 }}
             }}
