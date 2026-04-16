@@ -29,6 +29,11 @@ def resolve_model_path() -> Path:
 MODEL_PATH = resolve_model_path()
 LSTM_MODEL_PATH = ROOT / "ml" / "lstm_model.keras"
 DEFAULT_ORIGINS = ["http://localhost:8501", "http://127.0.0.1:8501", "http://localhost:5678"]
+CMAPSS_SPLIT = os.getenv("CMAPSS_SPLIT", "FD001").upper()
+CMAPSS_SOURCE = os.getenv("CMAPSS_SOURCE", "train").lower()
+CMAPSS_REPLAY_ENABLED = os.getenv("CMAPSS_REPLAY_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+CMAPSS_REPLAY_STATE: dict[int, int] = {}
+CMAPSS_COLUMNS = ["engine_id", "cycle", "op1", "op2", "op3"] + [f"s{i}" for i in range(1, 22)]
 
 
 def resolve_allowed_origins() -> list[str]:
@@ -184,6 +189,93 @@ def load_artifacts() -> dict[str, Any]:
         return pickle.load(handle)
 
 
+def resolve_cmapss_data_path(split: str | None = None, source: str | None = None) -> Path:
+    selected_split = (split or CMAPSS_SPLIT).upper()
+    selected_source = (source or CMAPSS_SOURCE).lower()
+    return ROOT / "data" / f"{selected_source}_{selected_split}.txt"
+
+
+@lru_cache(maxsize=2)
+def load_cmapss_replay_frame(split: str | None = None, source: str | None = None) -> pd.DataFrame:
+    selected_split = (split or CMAPSS_SPLIT).upper()
+    selected_source = (source or CMAPSS_SOURCE).lower()
+    data_path = resolve_cmapss_data_path(selected_split, selected_source)
+    if not data_path.exists():
+        raise FileNotFoundError(f"CMAPSS file not found: {data_path}")
+
+    raw_df = pd.read_csv(data_path, sep=r"\s+", header=None, engine="python")
+    if raw_df.shape[1] < len(CMAPSS_COLUMNS):
+        raise ValueError(f"Unexpected CMAPSS format in {data_path}; expected at least {len(CMAPSS_COLUMNS)} columns.")
+    if raw_df.shape[1] > len(CMAPSS_COLUMNS):
+        raw_df = raw_df.iloc[:, : len(CMAPSS_COLUMNS)]
+    raw_df.columns = CMAPSS_COLUMNS
+
+    feature_columns = ["engine_id", "cycle", *FEATURE_ORDER]
+    df = raw_df[feature_columns].copy()
+    df["engine_id"] = df["engine_id"].astype(int)
+    df["cycle"] = df["cycle"].astype(int)
+
+    if selected_source == "train":
+        max_cycle = df.groupby("engine_id")["cycle"].transform("max")
+        df["true_rul_cycles"] = (max_cycle - df["cycle"]).astype(float)
+    elif selected_source == "test":
+        rul_path = ROOT / "data" / f"RUL_{selected_split}.txt"
+        if not rul_path.exists():
+            raise FileNotFoundError(f"Missing CMAPSS RUL file for test split: {rul_path}")
+        rul_df = pd.read_csv(rul_path, sep=r"\s+", header=None, names=["final_rul"], engine="python")
+        rul_df["engine_id"] = np.arange(1, len(rul_df) + 1, dtype=int)
+        df = df.merge(rul_df, on="engine_id", how="left")
+        if df["final_rul"].isna().any():
+            raise ValueError(f"Could not align RUL file {rul_path} with test engines in {data_path}")
+        max_cycle = df.groupby("engine_id")["cycle"].transform("max")
+        df["true_rul_cycles"] = (df["final_rul"] + (max_cycle - df["cycle"])).astype(float)
+        df.drop(columns=["final_rul"], inplace=True)
+    else:
+        raise ValueError("CMAPSS_SOURCE must be 'train' or 'test'")
+
+    return df.sort_values(["engine_id", "cycle"]).reset_index(drop=True)
+
+
+@lru_cache(maxsize=2)
+def load_cmapss_replay_groups(split: str | None = None, source: str | None = None) -> dict[int, pd.DataFrame]:
+    frame = load_cmapss_replay_frame(split, source)
+    return {int(engine_id): group.reset_index(drop=True) for engine_id, group in frame.groupby("engine_id", sort=True)}
+
+
+def get_next_cmapss_snapshot(logical_engine_id: int) -> dict[str, Any] | None:
+    if not CMAPSS_REPLAY_ENABLED:
+        return None
+
+    try:
+        grouped = load_cmapss_replay_groups()
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+
+    available_engines = sorted(grouped.keys())
+    if not available_engines:
+        return None
+
+    mapped_engine_id = available_engines[(logical_engine_id - 1) % len(available_engines)]
+    engine_df = grouped[mapped_engine_id]
+    cursor = CMAPSS_REPLAY_STATE.get(logical_engine_id, 0)
+    index = cursor % len(engine_df)
+    CMAPSS_REPLAY_STATE[logical_engine_id] = (cursor + 1) % len(engine_df)
+
+    row = engine_df.iloc[index]
+    sensors = {feature: float(row[feature]) for feature in FEATURE_ORDER}
+
+    return {
+        "logical_engine_id": logical_engine_id,
+        "cmapss_engine_id": mapped_engine_id,
+        "cycle": int(row["cycle"]),
+        "true_rul_cycles": float(row["true_rul_cycles"]),
+        "sensors": sensors,
+        "data_source": "cmapss_replay",
+        "cmapss_split": CMAPSS_SPLIT,
+        "cmapss_source": CMAPSS_SOURCE,
+    }
+
+
 def get_risk_level(rul: float, anomaly: int) -> str:
     if anomaly == -1 or rul < 30:
         return "critical"
@@ -241,7 +333,13 @@ def simulate_sensor_data(engine_id: int) -> dict[str, float]:
     return sensors
 
 
-def predict_from_payload(payload: SensorPayload) -> dict[str, Any]:
+def predict_from_payload(payload: SensorPayload, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    metadata = metadata or {}
+    true_rul_cycles = metadata.get("true_rul_cycles")
+    true_rul_cycles = float(true_rul_cycles) if true_rul_cycles is not None else None
+
+    predicted_rul_cycles: float | None = None
+    model_used = False
     try:
         models = load_artifacts()
         xgb_model = models["xgb_model"]
@@ -254,41 +352,67 @@ def predict_from_payload(payload: SensorPayload) -> dict[str, Any]:
             columns=features,
         )
         scaled = scaler.transform(sensor_frame)
-        rul = float(xgb_model.predict(scaled)[0])
-        rul = max(0.0, round(rul, 1))
+        predicted_rul_cycles = float(xgb_model.predict(scaled)[0])
+        predicted_rul_cycles = max(0.0, round(predicted_rul_cycles, 1))
         anomaly = int(iso_forest.predict(scaled)[0])
+        model_used = True
     except (FileNotFoundError, OSError, pickle.UnpicklingError, EOFError, KeyError, TypeError, ValueError):
         sensor_values = {feature: float(getattr(payload, feature)) for feature in FEATURE_ORDER}
-        deviations = [
-            abs((sensor_values[feature] - FALLBACK_BASELINE[feature]) / FALLBACK_SCALE[feature])
-            for feature in FEATURE_ORDER
-        ]
-        degradation_index = float(np.mean(deviations))
-        engine_bias = 0.035 * ((payload.engine_id - 1) % 3)
-        degradation_index += engine_bias
+        if true_rul_cycles is not None:
+            predicted_rul_cycles = round(float(np.clip(true_rul_cycles, 0.0, 125.0)), 1)
+            anomaly = -1 if predicted_rul_cycles < 25 else 1
+        else:
+            deviations = [
+                abs((sensor_values[feature] - FALLBACK_BASELINE[feature]) / FALLBACK_SCALE[feature])
+                for feature in FEATURE_ORDER
+            ]
+            degradation_index = float(np.mean(deviations))
+            engine_bias = 0.035 * ((payload.engine_id - 1) % 3)
+            degradation_index += engine_bias
 
-        rul = round(float(np.clip(125.0 * (1.0 - 0.47 * degradation_index), 0.0, 125.0)), 1)
-        anomaly_score = max(
-            abs((sensor_values["s11"] - FALLBACK_BASELINE["s11"]) / FALLBACK_SCALE["s11"]),
-            abs((sensor_values["s20"] - FALLBACK_BASELINE["s20"]) / FALLBACK_SCALE["s20"]),
-            abs((sensor_values["s21"] - FALLBACK_BASELINE["s21"]) / FALLBACK_SCALE["s21"]),
-        )
-        anomaly = -1 if (degradation_index > 0.92 or anomaly_score > 1.45) else 1
+            predicted_rul_cycles = round(float(np.clip(125.0 * (1.0 - 0.47 * degradation_index), 0.0, 125.0)), 1)
+            anomaly_score = max(
+                abs((sensor_values["s11"] - FALLBACK_BASELINE["s11"]) / FALLBACK_SCALE["s11"]),
+                abs((sensor_values["s20"] - FALLBACK_BASELINE["s20"]) / FALLBACK_SCALE["s20"]),
+                abs((sensor_values["s21"] - FALLBACK_BASELINE["s21"]) / FALLBACK_SCALE["s21"]),
+            )
+            anomaly = -1 if (degradation_index > 0.92 or anomaly_score > 1.45) else 1
 
-    failure_probability = round(max(0.0, min(100.0, (1 - rul / 125.0) * 100.0 + (10 if anomaly == -1 else 0))), 1)
-    risk = get_risk_level(rul, anomaly)
-    health = round(max(0.0, min(100.0, (rul / 125.0) * 100.0)), 1)
+    effective_rul_cycles = true_rul_cycles if true_rul_cycles is not None else predicted_rul_cycles
+    if effective_rul_cycles is None:
+        effective_rul_cycles = 0.0
+
+    failure_probability = round(
+        max(0.0, min(100.0, (1 - effective_rul_cycles / 125.0) * 100.0 + (10 if anomaly == -1 else 0))),
+        1,
+    )
+    risk = get_risk_level(effective_rul_cycles, anomaly)
+    health = round(max(0.0, min(100.0, (effective_rul_cycles / 125.0) * 100.0)), 1)
+
+    prediction_error = None
+    if predicted_rul_cycles is not None and true_rul_cycles is not None:
+        prediction_error = round(predicted_rul_cycles - true_rul_cycles, 2)
 
     return {
         "engine_id": payload.engine_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "rul_hours": round(rul * 2),
+        "rul_hours": round(effective_rul_cycles * 2),
         "health_percent": health,
         "failure_probability": failure_probability,
         "anomaly_detected": anomaly == -1,
         "risk_level": risk,
         "sensors": payload.model_dump(exclude={"engine_id"}),
-        "recommendation": get_recommendation(risk, rul, anomaly),
+        "recommendation": get_recommendation(risk, effective_rul_cycles, anomaly),
+        "data_source": metadata.get("data_source", "simulated"),
+        "cmapss_split": metadata.get("cmapss_split"),
+        "cmapss_source": metadata.get("cmapss_source"),
+        "cmapss_engine_id": metadata.get("cmapss_engine_id"),
+        "cycle": metadata.get("cycle"),
+        "true_rul_cycles": round(true_rul_cycles, 1) if true_rul_cycles is not None else None,
+        "true_rul_hours": round(true_rul_cycles * 2) if true_rul_cycles is not None else None,
+        "predicted_rul_cycles": round(predicted_rul_cycles, 1) if predicted_rul_cycles is not None else None,
+        "prediction_error_cycles": prediction_error,
+        "model_used": model_used,
     }
 
 
@@ -300,6 +424,16 @@ def root() -> dict[str, str]:
 @app.get("/health")
 def health() -> dict[str, Any]:
     model_ready = MODEL_PATH.exists()
+    replay_path = resolve_cmapss_data_path()
+    replay_ready = False
+    replay_engines = 0
+    try:
+        replay_groups = load_cmapss_replay_groups()
+        replay_ready = bool(replay_groups)
+        replay_engines = len(replay_groups)
+    except (FileNotFoundError, ValueError, OSError):
+        replay_ready = False
+
     return {
         "status": "ok",
         "model_ready": model_ready,
@@ -307,6 +441,12 @@ def health() -> dict[str, Any]:
         "lstm_model_ready": LSTM_MODEL_PATH.exists(),
         "lstm_model_path": str(LSTM_MODEL_PATH),
         "model_stack": ["XGBoost", "Isolation Forest", "LSTM"],
+        "cmapss_replay_enabled": CMAPSS_REPLAY_ENABLED,
+        "cmapss_replay_ready": replay_ready,
+        "cmapss_replay_engines": replay_engines,
+        "cmapss_replay_path": str(replay_path),
+        "cmapss_split": CMAPSS_SPLIT,
+        "cmapss_source": CMAPSS_SOURCE,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -316,8 +456,21 @@ def predict_machine(engine_id: int) -> dict[str, Any]:
     if engine_id < 1:
         raise HTTPException(status_code=400, detail="engine_id must be positive")
 
+    cmapss_snapshot = get_next_cmapss_snapshot(engine_id)
+    if cmapss_snapshot is not None:
+        payload = SensorPayload(engine_id=engine_id, **cmapss_snapshot["sensors"])
+        metadata = {
+            "data_source": cmapss_snapshot["data_source"],
+            "cmapss_split": cmapss_snapshot["cmapss_split"],
+            "cmapss_source": cmapss_snapshot["cmapss_source"],
+            "cmapss_engine_id": cmapss_snapshot["cmapss_engine_id"],
+            "cycle": cmapss_snapshot["cycle"],
+            "true_rul_cycles": cmapss_snapshot["true_rul_cycles"],
+        }
+        return predict_from_payload(payload, metadata=metadata)
+
     payload = SensorPayload(engine_id=engine_id, **simulate_sensor_data(engine_id))
-    return predict_from_payload(payload)
+    return predict_from_payload(payload, metadata={"data_source": "simulated_fallback"})
 
 
 @app.post("/predict")
