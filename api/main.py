@@ -105,6 +105,72 @@ class VoiceMachineRequest(BaseModel):
 
 
 FEATURE_ORDER = ["s2", "s3", "s4", "s7", "s8", "s9", "s11", "s12", "s13", "s14", "s15", "s17", "s20", "s21"]
+ENGINE_RUNTIME: dict[int, dict[str, float]] = {}
+
+FALLBACK_BASELINE = {
+    "s2": 642.0,
+    "s3": 1592.0,
+    "s4": 1410.0,
+    "s7": 554.0,
+    "s8": 2390.0,
+    "s9": 9068.0,
+    "s11": 48.0,
+    "s12": 521.0,
+    "s13": 2388.0,
+    "s14": 8145.0,
+    "s15": 8.42,
+    "s17": 394.0,
+    "s20": 39.2,
+    "s21": 23.4,
+}
+
+FALLBACK_SCALE = {
+    "s2": 9.0,
+    "s3": 28.0,
+    "s4": 34.0,
+    "s7": 13.0,
+    "s8": 32.0,
+    "s9": 110.0,
+    "s11": 4.5,
+    "s12": 14.0,
+    "s13": 28.0,
+    "s14": 105.0,
+    "s15": 0.16,
+    "s17": 14.0,
+    "s20": 3.5,
+    "s21": 3.0,
+}
+
+DEGRADATION_SENSITIVITY = {
+    "s2": 0.014,
+    "s3": 0.021,
+    "s4": 0.024,
+    "s7": 0.016,
+    "s8": 0.019,
+    "s9": 0.027,
+    "s11": 0.060,
+    "s12": 0.022,
+    "s13": 0.019,
+    "s14": 0.028,
+    "s15": 0.115,
+    "s17": 0.039,
+    "s20": 0.072,
+    "s21": 0.079,
+}
+
+
+def get_engine_runtime(engine_id: int) -> dict[str, float]:
+    runtime = ENGINE_RUNTIME.get(engine_id)
+    if runtime is None:
+        seeded = random.Random(engine_id * 1009)
+        runtime = {
+            "cycle": float(seeded.randint(40, 220)),
+            "wear": seeded.uniform(0.16, 0.58),
+            "wear_rate": seeded.uniform(0.0015, 0.0065),
+            "phase": seeded.uniform(0.0, 2 * np.pi),
+        }
+        ENGINE_RUNTIME[engine_id] = runtime
+    return runtime
 
 
 @lru_cache(maxsize=1)
@@ -145,9 +211,34 @@ def simulate_sensor_data(engine_id: int) -> dict[str, float]:
         5: dict(s2=648, s3=1595, s4=1420, s7=556, s8=2393, s9=9075, s11=50, s12=524, s13=2392, s14=8155, s15=8.4800, s17=396, s20=40, s21=24),
         6: dict(s2=640, s3=1588, s4=1398, s7=552, s8=2387, s9=9055, s11=46, s12=519, s13=2382, s14=8120, s15=8.3900, s17=391, s20=38, s21=22),
     }
-    rng = random.Random(engine_id)
     selected = base.get(engine_id, base[1])
-    return {name: round(value + rng.uniform(-2, 2), 4) for name, value in selected.items()}
+    runtime = get_engine_runtime(engine_id)
+    runtime["cycle"] += 1.0
+    runtime["wear"] = min(1.0, runtime["wear"] + runtime["wear_rate"])
+
+    cycle = runtime["cycle"]
+    wear = runtime["wear"]
+    phase = runtime["phase"]
+
+    wave = float(np.sin(cycle / 9.0 + phase))
+    rng = random.Random((engine_id * 1_000_003) + int(cycle))
+
+    sensors: dict[str, float] = {}
+    for name, value in selected.items():
+        sensitivity = DEGRADATION_SENSITIVITY[name]
+        drift = value * sensitivity * wear
+        oscillation = value * (0.0015 if name != "s15" else 0.0035) * wave
+        noise = rng.uniform(-1.8, 1.8) if name != "s15" else rng.uniform(-0.08, 0.08)
+
+        spike = 0.0
+        if name in {"s11", "s17", "s20", "s21"} and rng.random() < wear * 0.20:
+            spike = rng.uniform(0.25, 2.6) if name == "s11" else rng.uniform(0.5, 3.4)
+        if name == "s15" and rng.random() < wear * 0.15:
+            spike = rng.uniform(0.04, 0.18)
+
+        sensors[name] = round(value + drift + oscillation + noise + spike, 4)
+
+    return sensors
 
 
 def predict_from_payload(payload: SensorPayload) -> dict[str, Any]:
@@ -167,11 +258,22 @@ def predict_from_payload(payload: SensorPayload) -> dict[str, Any]:
         rul = max(0.0, round(rul, 1))
         anomaly = int(iso_forest.predict(scaled)[0])
     except (FileNotFoundError, OSError, pickle.UnpicklingError, EOFError, KeyError, TypeError, ValueError):
-        sensor_values = np.array([getattr(payload, feature) for feature in FEATURE_ORDER], dtype=float)
-        spread = float(np.ptp(sensor_values))
-        normalized = (sensor_values - sensor_values.min()) / max(spread, 1.0)
-        rul = round(float(max(0.0, 125.0 - normalized.mean() * 125.0)), 1)
-        anomaly = -1 if normalized.std() > 0.22 else 1
+        sensor_values = {feature: float(getattr(payload, feature)) for feature in FEATURE_ORDER}
+        deviations = [
+            abs((sensor_values[feature] - FALLBACK_BASELINE[feature]) / FALLBACK_SCALE[feature])
+            for feature in FEATURE_ORDER
+        ]
+        degradation_index = float(np.mean(deviations))
+        engine_bias = 0.035 * ((payload.engine_id - 1) % 3)
+        degradation_index += engine_bias
+
+        rul = round(float(np.clip(125.0 * (1.0 - 0.47 * degradation_index), 0.0, 125.0)), 1)
+        anomaly_score = max(
+            abs((sensor_values["s11"] - FALLBACK_BASELINE["s11"]) / FALLBACK_SCALE["s11"]),
+            abs((sensor_values["s20"] - FALLBACK_BASELINE["s20"]) / FALLBACK_SCALE["s20"]),
+            abs((sensor_values["s21"] - FALLBACK_BASELINE["s21"]) / FALLBACK_SCALE["s21"]),
+        )
+        anomaly = -1 if (degradation_index > 0.92 or anomaly_score > 1.45) else 1
 
     failure_probability = round(max(0.0, min(100.0, (1 - rul / 125.0) * 100.0 + (10 if anomaly == -1 else 0))), 1)
     risk = get_risk_level(rul, anomaly)
