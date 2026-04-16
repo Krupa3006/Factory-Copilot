@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -21,6 +22,10 @@ VAPI_ASSISTANT_ID = os.getenv("VAPI_ASSISTANT_ID", "")
 GITHUB_REPO_URL = os.getenv("GITHUB_REPO_URL", "").strip()
 LINKEDIN_POST_URL = os.getenv("LINKEDIN_POST_URL", "").strip()
 AUTHOR_NAME = os.getenv("AUTHOR_NAME", "Krupa Joshi").strip()
+VOICE_WELCOME_MESSAGE = os.getenv(
+    "VOICE_WELCOME_MESSAGE",
+    "Hello, this is Factory Copilot. Voice is live. You can say: fleet briefing, status of machine 3, or create work order for machine 3.",
+).strip()
 
 st.set_page_config(page_title="Factory Copilot", page_icon="🏭", layout="wide")
 
@@ -391,6 +396,7 @@ voice_col3.markdown(
 )
 
 if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
+    welcome_message_js = json.dumps(VOICE_WELCOME_MESSAGE)
     components.html(
         f"""
         <div style="display:flex;align-items:center;justify-content:flex-start;gap:12px;flex-wrap:wrap;">
@@ -403,7 +409,10 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             <span style="color:#94a3b8;font-size:14px;">Voice assistant is configured and ready.</span>
         </div>
         <div id="factory-copilot-voice-status" style="margin-top:8px;color:#93c5fd;font-size:13px;">
-            Voice status: idle
+            Voice status: idle. Click the mic to start voice.
+        </div>
+        <div id="factory-copilot-voice-first-message" style="margin-top:6px;color:#a5f3fc;font-size:13px;">
+            First message after connect: {VOICE_WELCOME_MESSAGE}
         </div>
         <div style="margin-top:10px;border:1px dashed rgba(148,163,184,0.45);border-radius:12px;padding:8px 12px;color:#cbd5e1;font-size:13px;background:rgba(15,23,42,0.34);">
             Quick voice prompt: "Status of machine 3" or "Create work order for machine 3"
@@ -412,7 +421,9 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             const PUBLIC_KEY = "{VAPI_PUBLIC_KEY}";
             const ASSISTANT_ID = "{VAPI_ASSISTANT_ID}";
             const API_BASE = "{PUBLIC_API_BASE_URL}";
+            const FIRST_MESSAGE = {welcome_message_js};
             const statusEl = document.getElementById("factory-copilot-voice-status");
+            const firstMessageEl = document.getElementById("factory-copilot-voice-first-message");
             const button = document.getElementById("factory-copilot-voice-button");
             let vapiClient = null;
             let callActive = false;
@@ -432,6 +443,12 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 if (!statusEl) return;
                 statusEl.textContent = "Voice status: " + text;
                 statusEl.style.color = color;
+            }}
+
+            function setFirstMessage(text, color="#a5f3fc") {{
+                if (!firstMessageEl) return;
+                firstMessageEl.textContent = text;
+                firstMessageEl.style.color = color;
             }}
 
             function speak(text) {{
@@ -477,6 +494,10 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 floatingFab.style.background = isActive ? "#7f1d1d" : "#0B6E4F";
                 floatingFab.innerText = isActive ? "■" : "🎤";
                 floatingFab.title = isActive ? "Stop voice call" : "Talk to Factory Copilot";
+                if (button) {{
+                    button.style.background = isActive ? "#7f1d1d" : "#0B6E4F";
+                    button.textContent = isActive ? "■ Stop Voice Session" : "🎤 Talk to Factory Copilot";
+                }}
             }}
 
             function clearConnectTimer() {{
@@ -561,6 +582,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                     localListening = true;
                     setFabActive(true);
                     setStatus("local voice listening... speak now", "#86efac");
+                    setFirstMessage("Voice started (local mode). Say your command now.", "#86efac");
                 }};
 
                 localRecognizer.onresult = async (event) => {{
@@ -605,6 +627,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 }} else {{
                     setStatus("local voice enabled.", "#facc15");
                 }}
+                setFirstMessage("Vapi unavailable, switched to local voice mode.", "#facc15");
             }}
 
             async function ensureMicrophonePermission() {{
@@ -675,13 +698,15 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                             clearConnectTimer();
                             callActive = true;
                             setFabActive(true);
-                            setStatus("call started", "#86efac");
+                            setStatus("connected. assistant greeting started.", "#86efac");
+                            setFirstMessage("Assistant: " + FIRST_MESSAGE, "#86efac");
                         }});
                         vapiClient.on("call-end", () => {{
                             clearConnectTimer();
                             callActive = false;
                             setFabActive(false);
                             setStatus("call ended", "#93c5fd");
+                            setFirstMessage("Session ended. Click mic to start again.", "#a5f3fc");
                         }});
                         vapiClient.on("error", (err) => {{
                             clearConnectTimer();
@@ -722,6 +747,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 }}
 
                 setStatus("checking microphone permission...", "#facc15");
+                setFirstMessage("Starting voice... please allow microphone if prompted.", "#facc15");
                 const micOk = await ensureMicrophonePermission();
                 if (!micOk) return;
 
@@ -735,6 +761,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 try {{
                     await withTimeout(client.start(ASSISTANT_ID), 12000, "voice start");
                     setStatus("connecting to assistant...", "#facc15");
+                    setFirstMessage("Connecting... you will hear the assistant greeting in a moment.", "#facc15");
                     clearConnectTimer();
                     connectTimer = setTimeout(() => {{
                         if (!callActive) {{

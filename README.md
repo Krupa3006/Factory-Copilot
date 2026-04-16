@@ -1,95 +1,75 @@
-# Factory Copilot
+# Factory Copilot - Predictive Maintenance AI Agent
 
-Predictive maintenance copilot for CNC fleets using NASA CMAPSS data, FastAPI, Streamlit, and Vapi voice tools.
+Factory Copilot is an end-to-end predictive maintenance project built on NASA CMAPSS turbofan data.  
+It combines ML-driven health prediction, a FastAPI backend, a premium Streamlit command dashboard, and a Vapi voice operator assistant.
 
-## Overview
+Built by **Krupa Joshi**.
 
-Factory Copilot predicts machine risk, estimates remaining useful life (RUL), detects anomalies, and helps teams generate maintenance work orders from dashboard or voice.
+## What This Project Does
 
-Core stack:
+- Predicts machine health and Remaining Useful Life (RUL)
+- Detects abnormal behavior using anomaly detection
+- Generates maintenance work orders
+- Supports voice actions (fleet briefing, machine status, work-order creation)
+- Shows all results in a live operations dashboard
 
-- ML: XGBoost + Isolation Forest (+ optional LSTM training)
-- API: FastAPI
-- Dashboard: Streamlit + Plotly
-- Voice: Vapi API Request tools
-- Automation: n8n (optional phase)
-
-## Architecture
+## System Architecture
 
 ```text
 NASA CMAPSS Data
-  -> ML Training (XGBoost, Isolation Forest, optional LSTM)
+  -> ML Training (XGBoost + Isolation Forest + optional LSTM)
   -> FastAPI Backend
-  -> (optional) n8n workflows
-  -> Vapi Voice Agent + Streamlit Dashboard
+  -> Streamlit Dashboard + Vapi Voice Assistant
+  -> (optional) n8n Automation Workflows
 ```
 
-## Project Structure
+## Data and Modeling Approach
+
+- Primary dataset: NASA CMAPSS (FD001 by default)
+- API supports **CMAPSS replay mode** for realistic cycle progression
+- Risk classes: `healthy`, `warning`, `critical`
+- Model stack exposed in API health: XGBoost, Isolation Forest, LSTM (optional artifact)
+
+### CMAPSS Replay Profiles
+
+- `demo` (default): starts machines at different lifecycle points so users immediately see mixed states (`healthy` / `warning` / `critical`)
+- `sequential`: starts all engines from early cycles and progresses naturally
+
+This keeps behavior dataset-backed while still making demo behavior understandable.
+
+## Repository Structure
 
 ```text
 factory-copilot/
-├── api/
-│   └── main.py
-├── dashboard/
-│   └── app.py
-├── ml/
-│   ├── train_model.py
-│   ├── model.pkl
-│   ├── lstm_model.keras
-│   └── model_metrics.json
-├── integrations/
-│   └── vapi/
-├── workflows/
-│   └── factory_copilot_workflow.json
-├── scripts/
-├── render.yaml
-├── DEPLOYMENT.md
-├── requirements.txt
-├── requirements-train.txt
-└── .env.example
+├── api/                    # FastAPI backend
+├── dashboard/              # Streamlit dashboard
+├── data/                   # CMAPSS files
+├── ml/                     # training code + model artifacts
+├── integrations/vapi/      # Vapi prompt + setup docs
+├── workflows/              # n8n workflow JSON
+├── scripts/                # helper scripts
+├── render.yaml             # Render blueprint (API + dashboard)
+├── DEPLOYMENT.md           # deployment guide
+└── .env.example            # environment template
 ```
 
 ## Quick Start (Local)
 
-### 1) Install runtime dependencies
+1. Install dependencies:
 
 ```powershell
-cd "K:\factory copilot\factory-copilot"
 pip install -r requirements.txt
 ```
 
-For full training (includes TensorFlow/LSTM):
+2. Put CMAPSS files into `data/` (at minimum `train_FD001.txt`).
 
-```powershell
-pip install -r requirements-train.txt
-```
-
-### 2) Add CMAPSS data
-
-Download: [NASA CMAPSS on Kaggle](https://www.kaggle.com/datasets/behrad3d/nasa-cmaps)
-
-Place files in `data/` (at least `train_FD001.txt`).
-
-### 3) Train model artifacts
+3. Train model artifact:
 
 ```powershell
 python ml\train_model.py
 ```
 
-Artifacts:
-
-- `ml/model.pkl` (XGBoost + Isolation Forest for live API)
-- `ml/model_metrics.json`
-- `ml/lstm_model.keras` (when TensorFlow training is enabled)
-
-### 4) Run API + dashboard
-
-```powershell
-.\scripts\start-api.ps1
-.\scripts\start-dashboard.ps1
-```
-
-Or manual:
+4. Run backend + dashboard:
 
 ```powershell
 uvicorn api.main:app --reload --port 8000
@@ -98,118 +78,95 @@ streamlit run dashboard/app.py
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and set:
+Configure `.env` from `.env.example`:
 
 ```env
 API_URL=http://127.0.0.1:8000
 PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 MODEL_PATH=ml/model.pkl
-
 ALLOWED_ORIGINS=http://localhost:8501,http://127.0.0.1:8501
+
+CMAPSS_SPLIT=FD001
+CMAPSS_SOURCE=train
+CMAPSS_REPLAY_ENABLED=true
+CMAPSS_REPLAY_PROFILE=demo
 
 VAPI_PUBLIC_KEY=
 VAPI_ASSISTANT_ID=
-CLAUDE_API_KEY=
+VOICE_WELCOME_MESSAGE=Hello, this is Factory Copilot. Voice is live. You can say: fleet briefing, status of machine 3, or create work order for machine 3.
 
+AUTHOR_NAME=Krupa Joshi
 GITHUB_REPO_URL=
 LINKEDIN_POST_URL=
 ```
 
-## API Endpoints
+## API Overview
 
-Core:
+Core endpoints:
 
 - `GET /health`
 - `GET /fleet`
 - `GET /predict/{engine_id}`
+- `POST /predict`
 - `POST /workorder/{engine_id}`
 
-Voice helpers:
+Voice tool endpoints:
 
 - `POST /voice/tools/get_machine_status`
 - `POST /voice/tools/get_fleet_briefing`
 - `POST /voice/tools/create_work_order`
 
-## Vapi Setup (Current UI)
+## Vapi Integration (Current Recommended Setup)
 
-Use **Tools** (API Request), not deprecated Custom Functions.
+Use **Tools -> API Request** (not deprecated Custom Functions).
 
-Tool URLs:
+Configure three tools:
 
-- `POST https://YOUR_API_BASE/voice/tools/get_machine_status`
-- `POST https://YOUR_API_BASE/voice/tools/get_fleet_briefing`
-- `POST https://YOUR_API_BASE/voice/tools/create_work_order`
+1. `POST /voice/tools/get_machine_status` with `machine_id` in request schema (integer, required)
+2. `POST /voice/tools/get_fleet_briefing` with empty body
+3. `POST /voice/tools/create_work_order` with `machine_id` in request schema (integer, required)
 
 Important:
 
-- Set `Content-Type: application/json`
-- Keep `Static Body Fields` empty
-- Define `machine_id` in request schema (integer, required) for machine status/work order tools
-
-Full guide:
-
-- `integrations/vapi/SETUP.md`
+- Use `Content-Type: application/json`
+- Keep `Static Body Fields` empty for `machine_id`
+- Set assistant **First Message** to a clear startup line so users know voice is active
 
 ## Deployment
 
-This repo includes `render.yaml` to deploy:
+This project is blueprint-ready on Render via `render.yaml`:
 
-- `factory-copilot-api`
-- `factory-copilot-dashboard`
+- `factory-copilot-api` (FastAPI)
+- `factory-copilot-dashboard` (Streamlit)
 
-Use detailed deployment guide:
+Use `DEPLOYMENT.md` for complete production flow.
 
-- `DEPLOYMENT.md`
+Recommended production environment:
 
-Deployment notes:
+- Dashboard `API_URL` and `PUBLIC_API_BASE_URL` should point to deployed API URL
+- API `ALLOWED_ORIGINS` should include deployed dashboard URL
+- Set Vapi key + assistant ID on dashboard service
 
-- API installs `requirements.txt`
-- Dashboard installs `requirements-dashboard.txt` for faster and more stable Render builds
+## Troubleshooting (Most Common)
 
-Recommended Render env values:
+- **Render cold start delay**: Free tier may sleep; first request can take up to ~60s.
+- **Port 8000 already in use (`WinError 10048`)**: stop previous API process or change port.
+- **Voice SDK timeout in browser**: verify Vapi public key origins include dashboard domain and disable blockers for SDK scripts.
+- **`model_ready: false`**: model artifact missing in runtime; retrain or include `ml/model.pkl`.
 
-- API service:
-  - `MODEL_PATH=ml/model.pkl`
-  - `ALLOWED_ORIGINS=https://YOUR_DASHBOARD_URL`
-- Dashboard service:
-  - `API_URL=https://YOUR_API_URL`
-  - `PUBLIC_API_BASE_URL=https://YOUR_API_URL`
-  - `VAPI_PUBLIC_KEY=...`
-  - `VAPI_ASSISTANT_ID=...`
+## Scripts
 
-## Troubleshooting
+Useful local helpers:
 
-### Dashboard shows backend OFFLINE on Render
-
-On Render free tier, API cold start can take up to ~60 seconds. Refresh after wake-up.
-
-### `WinError 10048` (port 8000 already in use)
-
-Another API instance is already running. Stop old process or use a different port.
-
-### ngrok requires auth
-
-Use Cloudflare quick tunnel script:
-
-```powershell
-.\scripts\start-cloudflare-tunnel.ps1
-```
-
-### `model_ready: false` on `/health`
-
-`ml/model.pkl` is missing in deployed runtime. API still serves fallback simulation logic, but for full ML behavior add model artifact in deployment flow.
-
-## Useful Scripts
-
-- `.\scripts\start-core.ps1`
-- `.\scripts\check-stack.ps1`
-- `.\scripts\smoke-test-core.ps1`
-- `.\scripts\start-cloudflare-tunnel.ps1`
-- `.\scripts\setup-n8n.ps1`
-- `.\scripts\start-n8n.ps1`
+- `scripts/start-api.ps1`
+- `scripts/start-dashboard.ps1`
+- `scripts/start-core.ps1`
+- `scripts/smoke-test-core.ps1`
+- `scripts/start-cloudflare-tunnel.ps1`
 
 ## Roadmap
 
-- n8n production workflow activation
-- richer voice QA prompts and scorecards
-- persistent work-order storage and audit trail
+- Production n8n orchestration
+- Work-order persistence and audit history
+- Voice analytics and call quality scorecards
+- Expanded CMAPSS split evaluation and calibration
