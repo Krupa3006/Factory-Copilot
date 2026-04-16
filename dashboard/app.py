@@ -24,7 +24,7 @@ LINKEDIN_POST_URL = os.getenv("LINKEDIN_POST_URL", "").strip()
 AUTHOR_NAME = os.getenv("AUTHOR_NAME", "Krupa Joshi").strip()
 VOICE_WELCOME_MESSAGE = os.getenv(
     "VOICE_WELCOME_MESSAGE",
-    "Hello, this is Factory Copilot. Voice is live. You can say: fleet briefing, status of machine 3, or create work order for machine 3.",
+    "Hello, I am Factory Copilot. Voice is now connected. Click the mic icon and speak your request. I am listening.",
 ).strip()
 
 st.set_page_config(page_title="Factory Copilot", page_icon="🏭", layout="wide")
@@ -431,6 +431,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             let localMode = false;
             let localListening = false;
             let localRecognizer = null;
+            let welcomedThisSession = false;
 
             function withTimeout(promise, ms, label) {{
                 return Promise.race([
@@ -458,6 +459,13 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 utter.pitch = 1.0;
                 window.speechSynthesis.cancel();
                 window.speechSynthesis.speak(utter);
+            }}
+
+            function speakWelcomeOnce() {{
+                if (welcomedThisSession) return;
+                welcomedThisSession = true;
+                // Slight delay helps avoid overlap with connection audio transitions.
+                setTimeout(() => speak(FIRST_MESSAGE), 450);
             }}
 
             function upsertFloatingVoiceButton() {{
@@ -700,10 +708,12 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                             setFabActive(true);
                             setStatus("connected. assistant greeting started.", "#86efac");
                             setFirstMessage("Assistant: " + FIRST_MESSAGE, "#86efac");
+                            speakWelcomeOnce();
                         }});
                         vapiClient.on("call-end", () => {{
                             clearConnectTimer();
                             callActive = false;
+                            welcomedThisSession = false;
                             setFabActive(false);
                             setStatus("call ended", "#93c5fd");
                             setFirstMessage("Session ended. Click mic to start again.", "#a5f3fc");
@@ -712,6 +722,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                             clearConnectTimer();
                             const msg = err && err.message ? err.message : "unknown error";
                             callActive = false;
+                            welcomedThisSession = false;
                             setFabActive(false);
                             setStatus("error: " + msg, "#f87171");
                             activateLocalMode(msg);
@@ -747,7 +758,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 }}
 
                 setStatus("checking microphone permission...", "#facc15");
-                setFirstMessage("Starting voice... please allow microphone if prompted.", "#facc15");
+                setFirstMessage("Starting voice... click mic icon, allow microphone, then speak when connected.", "#facc15");
                 const micOk = await ensureMicrophonePermission();
                 if (!micOk) return;
 
