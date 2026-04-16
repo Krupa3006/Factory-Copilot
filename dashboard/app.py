@@ -187,6 +187,14 @@ def build_operations_queue(source_machines: list[dict[str, Any]]) -> pd.DataFram
     return pd.DataFrame(queue_rows)
 
 
+def mask_value(value: str, start: int = 4, end: int = 4) -> str:
+    if not value:
+        return "(missing)"
+    if len(value) <= start + end:
+        return value
+    return f"{value[:start]}...{value[-end:]}"
+
+
 st.markdown(
     f"""
     <div class="hero">
@@ -596,6 +604,9 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
         </script>
         """,
         height=175,
+    )
+    st.caption(
+        f"Voice debug: key={mask_value(VAPI_PUBLIC_KEY)} | assistant={mask_value(VAPI_ASSISTANT_ID)}"
     )
 else:
     st.caption("Add VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID in .env to enable one-click voice calls.")
