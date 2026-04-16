@@ -422,6 +422,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             const ASSISTANT_ID = "{VAPI_ASSISTANT_ID}";
             const API_BASE = "{PUBLIC_API_BASE_URL}";
             const FIRST_MESSAGE = {welcome_message_js};
+            const GREETING_PLAYED_KEY = "factory-copilot-greeting-played-v1";
             const statusEl = document.getElementById("factory-copilot-voice-status");
             const firstMessageEl = document.getElementById("factory-copilot-voice-first-message");
             const button = document.getElementById("factory-copilot-voice-button");
@@ -432,6 +433,11 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             let localListening = false;
             let localRecognizer = null;
             let welcomedThisSession = false;
+            try {{
+                welcomedThisSession = window.sessionStorage.getItem(GREETING_PLAYED_KEY) === "1";
+            }} catch (e) {{
+                welcomedThisSession = false;
+            }}
 
             function withTimeout(promise, ms, label) {{
                 return Promise.race([
@@ -452,6 +458,15 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                 firstMessageEl.style.color = color;
             }}
 
+            function markWelcomePlayed() {{
+                welcomedThisSession = true;
+                try {{
+                    window.sessionStorage.setItem(GREETING_PLAYED_KEY, "1");
+                }} catch (e) {{
+                    // ignore storage errors
+                }}
+            }}
+
             function speak(text) {{
                 if (!("speechSynthesis" in window)) return;
                 const utter = new SpeechSynthesisUtterance(text);
@@ -463,7 +478,7 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
 
             function speakWelcomeOnce() {{
                 if (welcomedThisSession) return;
-                welcomedThisSession = true;
+                markWelcomePlayed();
                 // Slight delay helps avoid overlap with connection audio transitions.
                 setTimeout(() => speak(FIRST_MESSAGE), 450);
             }}
@@ -618,13 +633,15 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
             async function startLocalListening(withIntro=false) {{
                 if (!ensureLocalRecognizer()) return;
                 try {{
-                    if (withIntro && "speechSynthesis" in window) {{
+                    const shouldSpeakIntro = withIntro && !welcomedThisSession;
+                    if (shouldSpeakIntro && "speechSynthesis" in window) {{
                         window.speechSynthesis.cancel();
                         const intro = new SpeechSynthesisUtterance(FIRST_MESSAGE);
                         intro.rate = 1.0;
                         intro.pitch = 1.0;
                         setStatus("local intro speaking...", "#86efac");
                         setFirstMessage("Assistant: " + FIRST_MESSAGE, "#86efac");
+                        markWelcomePlayed();
                         intro.onend = () => {{
                             try {{
                                 localRecognizer.start();
@@ -641,6 +658,9 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                         }};
                         window.speechSynthesis.speak(intro);
                         return;
+                    }}
+                    if (withIntro && welcomedThisSession) {{
+                        setFirstMessage("Voice connected. I am listening.", "#86efac");
                     }}
                     localRecognizer.start();
                 }} catch (err) {{
@@ -736,7 +756,6 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                         vapiClient.on("call-end", () => {{
                             clearConnectTimer();
                             callActive = false;
-                            welcomedThisSession = false;
                             setFabActive(false);
                             setStatus("call ended", "#93c5fd");
                             setFirstMessage("Session ended. Click mic to start again.", "#a5f3fc");
@@ -745,7 +764,6 @@ if VAPI_PUBLIC_KEY and VAPI_ASSISTANT_ID:
                             clearConnectTimer();
                             const msg = err && err.message ? err.message : "unknown error";
                             callActive = false;
-                            welcomedThisSession = false;
                             setFabActive(false);
                             setStatus("error: " + msg, "#f87171");
                             activateLocalMode(msg);
