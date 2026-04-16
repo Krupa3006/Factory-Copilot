@@ -32,6 +32,7 @@ DEFAULT_ORIGINS = ["http://localhost:8501", "http://127.0.0.1:8501", "http://loc
 CMAPSS_SPLIT = os.getenv("CMAPSS_SPLIT", "FD001").upper()
 CMAPSS_SOURCE = os.getenv("CMAPSS_SOURCE", "train").lower()
 CMAPSS_REPLAY_ENABLED = os.getenv("CMAPSS_REPLAY_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+CMAPSS_REPLAY_PROFILE = os.getenv("CMAPSS_REPLAY_PROFILE", "demo").strip().lower()
 CMAPSS_REPLAY_STATE: dict[int, int] = {}
 CMAPSS_COLUMNS = ["engine_id", "cycle", "op1", "op2", "op3"] + [f"s{i}" for i in range(1, 22)]
 
@@ -257,7 +258,9 @@ def get_next_cmapss_snapshot(logical_engine_id: int) -> dict[str, Any] | None:
 
     mapped_engine_id = available_engines[(logical_engine_id - 1) % len(available_engines)]
     engine_df = grouped[mapped_engine_id]
-    cursor = CMAPSS_REPLAY_STATE.get(logical_engine_id, 0)
+    cursor = CMAPSS_REPLAY_STATE.get(logical_engine_id)
+    if cursor is None:
+        cursor = get_initial_replay_cursor(logical_engine_id, len(engine_df))
     index = cursor % len(engine_df)
     CMAPSS_REPLAY_STATE[logical_engine_id] = (cursor + 1) % len(engine_df)
 
@@ -274,6 +277,28 @@ def get_next_cmapss_snapshot(logical_engine_id: int) -> dict[str, Any] | None:
         "cmapss_split": CMAPSS_SPLIT,
         "cmapss_source": CMAPSS_SOURCE,
     }
+
+
+def get_initial_replay_cursor(logical_engine_id: int, sequence_length: int) -> int:
+    if sequence_length <= 1:
+        return 0
+    if CMAPSS_REPLAY_PROFILE != "demo":
+        return 0
+
+    # Demo profile still uses real CMAPSS rows, but starts engines at different life stages
+    # so users can immediately see healthy/warning/critical behavior on first load.
+    target_rul_by_engine = {
+        1: 150,  # healthy
+        2: 110,  # healthy
+        3: 18,   # critical
+        4: 55,   # warning
+        5: 95,   # healthy
+        6: 130,  # healthy
+    }
+    target_rul = target_rul_by_engine.get(logical_engine_id, 120)
+    max_index = sequence_length - 1
+    index = int(max_index - target_rul)
+    return max(0, min(max_index, index))
 
 
 def get_risk_level(rul: float, anomaly: int) -> str:
@@ -447,6 +472,7 @@ def health() -> dict[str, Any]:
         "cmapss_replay_path": str(replay_path),
         "cmapss_split": CMAPSS_SPLIT,
         "cmapss_source": CMAPSS_SOURCE,
+        "cmapss_replay_profile": CMAPSS_REPLAY_PROFILE,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
